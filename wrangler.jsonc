@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "handoff-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "migrations": [
+    {
+      "new_sqlite_classes": ["HandoffMCP"],
+      "tag": "v1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "HandoffMCP",
+        "name": "MCP_OBJECT"
+      }
+    ]
+  },
+  // Worker-wide SQLite shared across ALL MCP sessions, keyed by project_id.
+  // This is what makes handoff work across new chats (the McpAgent DO is
+  // per-session and cannot hold shared state). `wrangler dev` spins up a local
+  // D1 automatically; before deploying, run `wrangler d1 create handoff` and
+  // paste the returned id into "database_id" below.
+  "d1_databases": [
+    {
+      "binding": "HANDOFF_DB",
+      "database_name": "handoff",
+      "database_id": "local-dev-placeholder"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

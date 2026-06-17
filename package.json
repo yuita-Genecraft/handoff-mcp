@@ -1,0 +1,26 @@
+{
+  "name": "handoff-mcp",
+  "version": "1.0.0",
+  "description": "Remote MCP server that keeps one project on its NORTH STAR: stores the north star, the single focus to work on now (本丸), and demoted 後処理 tasks. For use as a claude.ai custom connector.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "tsc --noEmit",
+    "smoke": "tsx test/smoke.ts",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "agents": "^0.9.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.79.0"
+  }
+}
