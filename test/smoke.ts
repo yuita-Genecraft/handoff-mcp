@@ -4,9 +4,9 @@
 // be readable from a DIFFERENT session (a new `initialize`, i.e. a new chat /
 // generation). It speaks the REAL MCP Streamable HTTP protocol end to end.
 //
-// Session A:  set_north_star (+ empty-text error check) → set_focus → add_task ×3
+// Session A:  set_north_star (+ empty-text error check) → set_focus → add_task ×3 → set_context_pointer
 // Session B:  (separate initialize, different session id) get_state same project_id
-//             → MUST see A's north star, 本丸, and 後処理. Then complete_task.
+//             → MUST see A's コンパス(north star), 本丸, 詳細ポインタ(📎), and 後処理. Then complete_task.
 // Session C:  (third initialize) get_state → completed cleanup is gone, record stays.
 //
 // Usage:
@@ -59,6 +59,7 @@ async function main() {
   const FOCUS = "オンボーディング導線を1本だけ完成させる";
   const CLEANUP = "READMEの古いスクショを差し替える";
   const RECORD = "βユーザーの所感をログに残す";
+  const POINTER = "drive:1Handoff_stage2_pointer";
   console.log(`→ target ${URL_HREF}\n→ project_id "${project}"\n`);
 
   // ----- Session A: write everything -------------------------------------
@@ -89,8 +90,9 @@ async function main() {
   })) as CallResult;
   await a.client.callTool({ name: "add_task", arguments: { project_id: project, body: RECORD, kind: "record" } });
   await a.client.callTool({ name: "add_task", arguments: { project_id: project, body: "サインアップAPIを実装", kind: "main" } });
+  await a.client.callTool({ name: "set_context_pointer", arguments: { project_id: project, pointer: POINTER } });
   const cleanupId = textOf(cleanup).match(/id=([0-9a-f-]+)/)?.[1];
-  console.log(`  (session A wrote north star + focus + 3 tasks; cleanup id=${cleanupId})`);
+  console.log(`  (session A wrote コンパス + focus + 3 tasks + 詳細ポインタ; cleanup id=${cleanupId})`);
 
   // ----- Session B: a DIFFERENT session must see A's state ----------------
   const b = await openSession("B");
@@ -99,7 +101,8 @@ async function main() {
   const stateB = textOf((await b.client.callTool({ name: "get_state", arguments: { project_id: project } })) as CallResult);
   console.log("\n=== get_state from session B (the handoff) ===\n" + stateB + "\n");
 
-  check(stateB.includes(`🎯 NORTH STAR: ${NORTH}`), "B sees A's north star");
+  check(stateB.includes(`🧭 コンパス: ${NORTH}`), "B sees A's コンパス (north star)");
+  check(stateB.includes(`📎 詳細（経緯・なぜ・未決）はここ: ${POINTER}`), "B sees A's 詳細ポインタ (📎, cross-session)");
   check(stateB.includes(`▶ 本丸（今やる1つ）: ${FOCUS}`), "B sees A's 本丸 (focus)");
   check(stateB.includes(`[cleanup] ${CLEANUP}`), "B sees A's cleanup 後処理");
   check(stateB.includes(`[record] ${RECORD}`), "B sees A's record 後処理");

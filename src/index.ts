@@ -57,9 +57,9 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 // The fixed instruction that MUST ride along with get_state's contract so the
 // model reading the output does not flatten it into a generic TODO menu.
 const GET_STATE_FOOTER =
-  "この出力をフラットなTODOメニューに変換するな。まず北極星を述べ、本丸を1つ進めよ。後処理は北極星達成後にのみ着手。";
+  "この出力をフラットなTODOメニューに変換するな。まずコンパスを述べ、本丸を1つ進めよ。後処理はコンパスが指す先に着くまで着手するな。";
 
-type ProjectRow = { id: string; name: string | null; north_star: string };
+type ProjectRow = { id: string; name: string | null; north_star: string; context_pointer: string | null };
 type FocusRow = { statement: string | null; why: string | null };
 type TaskRow = { kind: string; body: string };
 
@@ -67,9 +67,10 @@ type TaskRow = { kind: string; body: string };
 // isolate. D1 has no per-DO init hook, so we lazily ensure tables on first use.
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS project (
-     id         TEXT PRIMARY KEY,
-     name       TEXT,
-     north_star TEXT NOT NULL
+     id              TEXT PRIMARY KEY,
+     name            TEXT,
+     north_star      TEXT NOT NULL,
+     context_pointer TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS focus (
      project_id TEXT UNIQUE,
@@ -90,6 +91,14 @@ function ensureSchema(db: D1Database): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       for (const stmt of SCHEMA) await db.prepare(stmt).run();
+      // 段階2 (progressive disclosure): 既存の project テーブルに context_pointer を
+      // 後付けする。新規テーブルは CREATE 済み。既にカラムがあれば D1 が
+      // "duplicate column" を投げるので握りつぶす（冪等）。
+      try {
+        await db.prepare(`ALTER TABLE project ADD COLUMN context_pointer TEXT`).run();
+      } catch (_) {
+        /* column already exists — no-op */
+      }
     })().catch((e) => {
       schemaReady = null; // let the next call retry if bootstrap failed
       throw e;
@@ -116,9 +125,10 @@ export class HandoffMCP extends McpAgent<Env> {
    * Build the get_state output contract — the SINGLE source of truth for the
    * format. The exact shape (order, symbols) is part of the tool's contract:
    *
-   *   🎯 NORTH STAR: {north_star}
+   *   🧭 コンパス: {north_star}
    *   ▶ 本丸（今やる1つ）: {focus.statement}（理由: {why}）
-   *   — 以下は後処理（北極星達成後・今は着手しない）—
+   *   📎 詳細（経緯・なぜ・未決）はここ: {context_pointer}（未設定なら省略）
+   *   — 以下は後処理（コンパスが指す先に着くまで・今は着手しない）—
    *     [cleanup] {body}
    *     [record] {body}
    *
@@ -132,9 +142,9 @@ export class HandoffMCP extends McpAgent<Env> {
    */
   private async renderState(db: D1Database, projectId: string): Promise<string> {
     const project = await db
-      .prepare(`SELECT north_star FROM project WHERE id = ?`)
+      .prepare(`SELECT north_star, context_pointer FROM project WHERE id = ?`)
       .bind(projectId)
-      .first<Pick<ProjectRow, "north_star">>();
+      .first<Pick<ProjectRow, "north_star" | "context_pointer">>();
     const focus = await db
       .prepare(`SELECT statement, why FROM focus WHERE project_id = ?`)
       .bind(projectId)
@@ -149,7 +159,7 @@ export class HandoffMCP extends McpAgent<Env> {
       .all<TaskRow>();
 
     const lines: string[] = [];
-    lines.push(`🎯 NORTH STAR: ${project?.north_star ?? "(未設定)"}`);
+    lines.push(`🧭 コンパス: ${project?.north_star ?? "(未設定)"}`);
 
     if (focus?.statement) {
       const why = focus.why ? `（理由: ${focus.why}）` : "";
@@ -158,7 +168,13 @@ export class HandoffMCP extends McpAgent<Env> {
       lines.push(`▶ 本丸（今やる1つ）: (未設定)`);
     }
 
-    lines.push(`— 以下は後処理（北極星達成後・今は着手しない）—`);
+    // 段階2: 詳細（経緯・なぜ・未決の詳細＝意味記憶）はここに本文を載せず、
+    // 置き場所へのポインタ（Drive ID / URL 等）だけを返す。未設定なら出さない。
+    if (project?.context_pointer) {
+      lines.push(`📎 詳細（経緯・なぜ・未決）はここ: ${project.context_pointer}`);
+    }
+
+    lines.push(`— 以下は後処理（コンパスが指す先に着くまで・今は着手しない）—`);
     const rows = demoted.results ?? [];
     if (rows.length === 0) {
       lines.push(`  （なし）`);
@@ -174,11 +190,12 @@ export class HandoffMCP extends McpAgent<Env> {
       "get_state",
       [
         "プロジェクトの現在地を、必ず次の固定フォーマットの1つの文字列で返す（行の順序・記号・絵文字も固定）:",
-        "🎯 NORTH STAR: {north_star}",
+        "🧭 コンパス: {north_star}",
         "▶ 本丸（今やる1つ）: {focus.statement}（理由: {why}）",
-        "— 以下は後処理（北極星達成後・今は着手しない）—",
+        "📎 詳細（経緯・なぜ・未決）はここ: {context_pointer}（未設定なら省略）",
+        "— 以下は後処理（コンパスが指す先に着くまで・今は着手しない）—",
         "  [cleanup] {body} / [record] {body}",
-        "（後処理は demoted=1 のタスク=cleanup/record のみ。本丸は focus が常に1つ。状態はセッションを跨いで project_id 単位で共有される。）",
+        "（後処理は demoted=1 のタスク=cleanup/record のみ。本丸は focus が常に1つ。詳細は本文を載せずポインタだけ。状態はセッションを跨いで project_id 単位で共有される。）",
         GET_STATE_FOOTER,
       ].join("\n"),
       { project_id: z.string().describe("対象プロジェクトID") },
@@ -194,15 +211,15 @@ export class HandoffMCP extends McpAgent<Env> {
 
     this.server.tool(
       "set_north_star",
-      "プロジェクトの北極星(north_star)を設定/更新する。text が空（空白のみ含む）ならエラー（north_star は NOT NULL 強制）。プロジェクトが無ければ作成し、あれば north_star を上書きする。",
+      "プロジェクトのコンパス(north_star)を設定/更新する。text が空（空白のみ含む）ならエラー（north_star は NOT NULL 強制）。プロジェクトが無ければ作成し、あれば north_star を上書きする。",
       {
         project_id: z.string().describe("対象プロジェクトID"),
-        text: z.string().describe("北極星の文章。空にはできない"),
+        text: z.string().describe("コンパスの文章。空にはできない"),
       },
       async ({ project_id, text }): Promise<ToolResult> => {
         try {
           if (!text || text.trim() === "") {
-            return err("north_star は空にできません（NOT NULL 強制）。");
+            return err("コンパス(north_star)は空にできません（NOT NULL 強制）。");
           }
           const db = await this.db();
           await db
@@ -212,7 +229,7 @@ export class HandoffMCP extends McpAgent<Env> {
             )
             .bind(project_id, text)
             .run();
-          return ok(`OK: north_star を設定しました。\n\n${await this.renderState(db, project_id)}`);
+          return ok(`OK: コンパスを設定しました。\n\n${await this.renderState(db, project_id)}`);
         } catch (e) {
           return err(errMsg(e));
         }
@@ -247,7 +264,7 @@ export class HandoffMCP extends McpAgent<Env> {
 
     this.server.tool(
       "add_task",
-      "タスクを追加する。kind は main|cleanup|record。cleanup と record は後処理として demoted=1 で登録され、get_state では『北極星達成後にのみ着手する後処理』に並ぶ（本丸の手前には出さない）。main は demoted=0。",
+      "タスクを追加する。kind は main|cleanup|record。cleanup と record は後処理として demoted=1 で登録され、get_state では『コンパスが指す先に着くまで着手しない後処理』に並ぶ（本丸の手前には出さない）。main は demoted=0。",
       {
         project_id: z.string().describe("対象プロジェクトID"),
         body: z.string().describe("タスク本文"),
@@ -287,6 +304,35 @@ export class HandoffMCP extends McpAgent<Env> {
             .run();
           if (!res.meta.changes) return err(`task_id "${task_id}" は存在しません。`);
           return ok(`OK: タスク ${task_id} を完了にしました（status=done）。`);
+        } catch (e) {
+          return err(errMsg(e));
+        }
+      },
+    );
+
+    this.server.tool(
+      "set_context_pointer",
+      "詳細（経緯・なぜ・未決の詳細＝意味記憶）の置き場所へのポインタを設定する。get_state は本文を載せず、このポインタ（Drive ファイルID / URL 等）だけを返す＝progressive disclosure。pointer を空文字にすると詳細行を消す。project が無ければエラー（先に set_north_star でコンパスを設定）。",
+      {
+        project_id: z.string().describe("対象プロジェクトID"),
+        pointer: z
+          .string()
+          .describe("詳細の置き場所（Drive ファイルID / URL など）。空文字でクリア"),
+      },
+      async ({ project_id, pointer }): Promise<ToolResult> => {
+        try {
+          const db = await this.db();
+          const value = pointer.trim() === "" ? null : pointer;
+          const res = await db
+            .prepare(`UPDATE project SET context_pointer = ? WHERE id = ?`)
+            .bind(value, project_id)
+            .run();
+          if (!res.meta.changes) {
+            return err(
+              `project "${project_id}" は未作成です。先に set_north_star でコンパスを設定してください。`,
+            );
+          }
+          return ok(`OK: 詳細ポインタを設定しました。\n\n${await this.renderState(db, project_id)}`);
         } catch (e) {
           return err(errMsg(e));
         }
