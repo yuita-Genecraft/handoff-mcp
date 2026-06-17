@@ -27,7 +27,7 @@
     {
       "binding": "HANDOFF_DB",
       "database_name": "handoff",
-      "database_id": "local-dev-placeholder"
+      "database_id": "139aa0c1-fa15-4654-a36f-5a6a1c46b909"
     }
   ],
   "observability": {
