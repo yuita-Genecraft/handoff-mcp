@@ -345,6 +345,39 @@ export class HandoffMCP extends McpAgent<Env> {
 // Worker entry: token-in-URL gate, then delegate to the MCP transport.
 // ---------------------------------------------------------------------------
 
+const CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, OPTIONS",
+};
+const cell = (s: string | null | undefined): string =>
+  String(s ?? "").replace(/\|/g, "/").replace(/\r?\n/g, " ").trim();
+async function renderProjectsTable(db: D1Database): Promise<string> {
+  await ensureSchema(db);
+  const projects = await db
+    .prepare(`SELECT id, north_star, context_pointer FROM project ORDER BY rowid`)
+    .all<Pick<ProjectRow, "id" | "north_star" | "context_pointer">>();
+  const lines = [
+    "| No | タスク | 状態 | 目的 | 核 | 説明 | 備考 |",
+    "|----|--------|------|------|----|------|------|",
+  ];
+  let i = 1;
+  for (const p of projects.results ?? []) {
+    const focus = await db
+      .prepare(`SELECT statement, why FROM focus WHERE project_id = ?`)
+      .bind(p.id)
+      .first<FocusRow>();
+    const status = focus?.statement ? "進行中" : "未着手";
+    const desc = focus?.statement
+      ? `本丸: ${focus.statement}${focus.why ? `（${focus.why}）` : ""}`
+      : "本丸未設定";
+    lines.push(
+      `| ${i} | ${cell(p.id)} | ${status} | システム | ${cell(p.north_star)} | ${cell(desc)} | ${cell(p.context_pointer)} |`,
+    );
+    i++;
+  }
+  return lines.join("\n");
+}
+
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -369,6 +402,25 @@ export default {
 
     // Remaining path after the secret token segment.
     const rest = "/" + segments.slice(1).join("/");
+
+    if (rest === "/projects" || rest === "/projects.md") {
+      if (request.method === "OPTIONS") {
+        return new Response(null, { headers: CORS_HEADERS });
+      }
+      return (async () => {
+        try {
+          const md = await renderProjectsTable(env.HANDOFF_DB);
+          return new Response(md, {
+            headers: { "content-type": "text/markdown; charset=utf-8", ...CORS_HEADERS },
+          });
+        } catch (e) {
+          return new Response("error: " + (e instanceof Error ? e.message : String(e)), {
+            status: 500,
+            headers: CORS_HEADERS,
+          });
+        }
+      })();
+    }
 
     // Mount the agent at the FULL token-prefixed path so the transport advertises
     // a message endpoint that also carries the token.
